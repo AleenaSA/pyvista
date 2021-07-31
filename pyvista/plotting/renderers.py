@@ -305,7 +305,8 @@ class Renderers():
             appear in one window.
 
         Returns
-        pyvista.BackgroundRenderer
+        -------
+        :class:`pyvista.BackgroundRenderer`
             Newly created background renderer.
 
         """
@@ -419,6 +420,10 @@ class Renderers():
             raise RuntimeError('No background image to remove at this subplot')
         renderer.deep_clean()
         self._background_renderers[self.active_index] = None
+
+        # return the active renderer to the top, otherwise flat background
+        # will not be rendered
+        self.active_renderer.layer = 0
 
     def __del__(self):
         """Destructor."""

@@ -37,6 +37,7 @@ from .widgets import WidgetHelper
 from .scalar_bars import ScalarBars
 from .renderers import Renderers
 from .render_window_interactor import RenderWindowInteractor
+from .render_window import RenderWindow
 
 def _has_matplotlib():
     try:
@@ -916,7 +917,7 @@ class BasePlotter(PickingHelper, WidgetHelper):
         if hasattr(self, 'ren_win'):
             result = self.renderer.enable_depth_peeling(*args, **kwargs)
             if result:
-                self.ren_win.AlphaBitPlanesOn()
+                self.ren_win.alpha_bit_planes = True
 
         return result
 
@@ -924,7 +925,7 @@ class BasePlotter(PickingHelper, WidgetHelper):
     def disable_depth_peeling(self):
         """Wrap ``Renderer.disable_depth_peeling``."""
         if hasattr(self, 'ren_win'):
-            self.ren_win.AlphaBitPlanesOff()
+            self.ren_win.alpha_bit_planes = False
             return self.renderer.disable_depth_peeling()
 
     @wraps(Renderer.get_default_cam_pos)
@@ -1038,12 +1039,12 @@ class BasePlotter(PickingHelper, WidgetHelper):
     @property
     def window_size(self):
         """Return the render window size."""
-        return list(self.ren_win.GetSize())
+        return self.ren_win.size
 
     @window_size.setter
     def window_size(self, window_size):
         """Set the render window size."""
-        self.ren_win.SetSize(window_size[0], window_size[1])
+        self.ren_win.size = window_size
 
     @property
     def image_depth(self):
@@ -1097,7 +1098,7 @@ class BasePlotter(PickingHelper, WidgetHelper):
         """
         if hasattr(self, 'ren_win') and not self._first_time:
             log.debug('Rendering')
-            self.ren_win.Render()
+            self.ren_win.render()
             self._rendered = True
 
     @wraps(RenderWindowInteractor.add_key_event)
@@ -1196,10 +1197,8 @@ class BasePlotter(PickingHelper, WidgetHelper):
 
     def left_button_down(self, obj, event_type):
         """Register the event for a left button down click."""
-        if hasattr(self.ren_win, 'GetOffScreenFramebuffer'):
-            if not self.ren_win.GetOffScreenFramebuffer().GetFBOIndex():
-                # must raise a runtime error as this causes a segfault on VTK9
-                raise ValueError('Invoking helper with no framebuffer')
+        self.ren_win.check_offscreen_framebuffer()
+
         # Get 2D click location on window
         click_pos = self.iren.get_event_position()
 
@@ -2795,7 +2794,7 @@ class BasePlotter(PickingHelper, WidgetHelper):
     def _clear_ren_win(self):
         """Clear the render window."""
         if hasattr(self, 'ren_win'):
-            self.ren_win.Finalize()
+            self.ren_win.finalize()
             del self.ren_win
 
     def close(self, render=False):
@@ -3947,11 +3946,10 @@ class BasePlotter(PickingHelper, WidgetHelper):
                                'Remove it with ``remove_background_image`` '
                                'before adding one')
 
-        # Need to change the number of layers to support an additional
-        # background layer
-        self.ren_win.SetNumberOfLayers(3)
+        # add a background layer to support the background renderer
+        self.ren_win.add_background_layer()
         renderer = self.renderers.add_background_renderer(image_path, scale, as_global)
-        self.ren_win.AddRenderer(renderer)
+        self.ren_win.add_renderer(renderer)
 
         # setup autoscaling of the image
         if auto_resize:  # pragma: no cover
@@ -4213,31 +4211,22 @@ class Plotter(BasePlotter):
             multi_samples = self._theme.multi_samples
 
         # initialize render window
-        self.ren_win = _vtk.vtkRenderWindow()
-        self.ren_win.SetMultiSamples(multi_samples)
-        self.ren_win.SetBorders(True)
-        if line_smoothing:
-            self.ren_win.LineSmoothingOn()
-        if point_smoothing:
-            self.ren_win.PointSmoothingOn()
-        if polygon_smoothing:
-            self.ren_win.PolygonSmoothingOn()
-
-        for renderer in self.renderers:
-            self.ren_win.AddRenderer(renderer)
+        self.ren_win = RenderWindow(multi_samples,
+                                    line_smoothing=line_smoothing,
+                                    point_smoothing=point_smoothing,
+                                    polygon_smoothing=polygon_smoothing,
+                                    off_screen=self.off_screen,
+                                    renderers=self.renderers,
+                                    )
 
         # Add the shadow renderer to allow us to capture interactions within
         # a given viewport
         # https://vtk.org/pipermail/vtkusers/2018-June/102030.html
-        number_or_layers = self.ren_win.GetNumberOfLayers()
-        current_layer = self.renderer.GetLayer()
-        self.ren_win.SetNumberOfLayers(number_or_layers + 1)
-        self.ren_win.AddRenderer(self.renderers.shadow_renderer)
-        self.renderers.shadow_renderer.SetLayer(current_layer + 1)
+        current_layer = self.renderer.layer
+        self.ren_win.n_layers += 1
+        self.ren_win.add_renderer(self.renderers.shadow_renderer)
+        self.renderers.shadow_renderer.layer = current_layer + 1
         self.renderers.shadow_renderer.SetInteractive(False)  # never needs to capture
-
-        if self.off_screen:
-            self.ren_win.SetOffScreenRendering(1)
 
         # Add ren win and interactor
         self.iren = RenderWindowInteractor(self, light_follow_camera=False)
@@ -4438,8 +4427,8 @@ class Plotter(BasePlotter):
             full_screen = self._theme.full_screen
 
         if full_screen:
-            self.ren_win.SetFullScreen(True)
-            self.ren_win.BordersOn()  # super buggy when disabled
+            self.ren_win.full_screen = True
+            self.ren_win.borders = True  # super buggy when disabled
         else:
             if window_size is None:
                 window_size = self.window_size
